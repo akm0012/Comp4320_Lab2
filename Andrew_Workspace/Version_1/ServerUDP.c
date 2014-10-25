@@ -33,17 +33,34 @@
 // Prototypes
 int count_vowels(char*);
 char* disemvowel(char*); 
+unsigned char add_bits(unsigned char *, int); 
 
+unsigned char calculate_checksum(unsigned char *data_in, int data_in_length); 
 // Struct that will be received from the client
 struct received_packet
 {
 	unsigned short TML;	// Total Message Length (2 bytes)
-	unsigned short RID;	// Request ID (2 bytes)
-	unsigned char operation;	//operation (1 byte)
+	unsigned char checksum;
+	unsigned char GID;	//Group ID (1 byte)
+	unsigned char RID;	// Request ID (1 byte)
 	char message[MAX_MESSAGE_LEN];	// Message (Limited to 1 Kb)
 } __attribute__((__packed__));
 
-typedef struct received_packet rx_packet;	
+typedef struct received_packet rx_packet;
+
+// Struct that will be used to recieve unverified incoming packets.
+struct incoming_unverified_packet
+{
+	unsigned char b1;
+	unsigned char b2;
+	unsigned char b3;
+	unsigned char b4;
+	unsigned char b5;
+	unsigned int extra[MAX_MESSAGE_LEN];
+} __attribute__((__packed__));
+
+typedef struct incoming_unverified_packet rx_check;
+	
 	
 
 // Struct that will be sent to the client, if client requested vLength
@@ -172,113 +189,49 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 	
-		printf("Packet Received!\n");
+		printf("Packet Received! It contained: %d bytes.\n", numbytes);
 
 		// Add the null to terminate the string
 		packet_in.message[numbytes - 5] = '\0';	// numbytes - 5: To compensate for header
 		
-		if (DEBUG) {
+//		if (DEBUG) {
 			printf("struct.tml = %d\n", ntohs(packet_in.TML));
-			printf("struct.rid = %d\n", ntohs(packet_in.RID));
-			printf("struct.op = %d\n", packet_in.operation);
+			printf("struct.checksum = %X\n", packet_in.checksum);
+			printf("struct.gid = %d\n", packet_in.GID);
+			printf("struct.rid = %d\n", packet_in.RID);
 			printf("struct.message = %s\n", packet_in.message);
-		}
+			printf("Checksum Check:  %X\n", calculate_checksum((unsigned char *)&packet_in, ntohs(packet_in.TML)));
+//		}
 
-		// Here we check what operation the client wanted. 
-		
-		if (packet_in.operation == V_LENGTH)
-		{				
-			if (DEBUG) {
-				printf("Operation: vLength requested.\n");
-				printf("String to process: %s\n", packet_in.message);
-				printf("The number of vowels in string '%s' is: %d\n", 
-					packet_in.message, count_vowels(packet_in.message));
-			}
+			rx_check rx_verify;
 
-			// Create packet that will be returned to the client
-			tx_vLength packet_out_vLength;
-			
-			// Fill in the struct with TML, RID and vLength
-			packet_out_vLength.TML = htons(((sizeof packet_out_vLength.TML) 
-				+ (sizeof packet_out_vLength.RID) 
-				+ (sizeof packet_out_vLength.vLength)));
-			packet_out_vLength.RID = htons(ntohs(packet_in.RID));
-			packet_out_vLength.vLength = htons(count_vowels(packet_in.message)); 		
-	
-			if (DEBUG) {
-				printf("packet_out_vLength.TML: %d\n", ntohs(packet_out_vLength.TML));
-				printf("packet_out_vLength.RID: %d\n", ntohs(packet_out_vLength.RID));
-				printf("packet_out_vLength.VLength: %d\n", ntohs(packet_out_vLength.vLength));
-			}
+			rx_verify.b1 = 0;
 
-			if (DEBUG) {
-				printf("Sending vLength packet to Client.\n"); 			
-			}
+			rx_verify.b2 = 13;
+			rx_verify.b3 = 0;
+			rx_verify.b4 = 15;
+			rx_verify.b5 = 99;
+			rx_verify.extra[0] = 0xffffffff;
+			rx_verify.extra[1] = 0xff1100aa;
+			rx_verify.b3 = calculate_checksum((unsigned char *)&rx_verify, 5 + 8);
+
+			printf("----- Sent Packet -----\n");
+			printf("rx_verify.b1: \t%d \t(%X)\n", rx_verify.b1, rx_verify.b1);
+			printf("rx_verify.b2: \t%d \t(%X)\n", rx_verify.b2, rx_verify.b2);
+			printf("rx_verify.b3: \t%d \t(%X)\n", rx_verify.b3, rx_verify.b3);
+			printf("rx_verify.b4: \t%d \t(%X)\n", rx_verify.b4, rx_verify.b4);
+			printf("rx_verify.b5: \t%d \t(%X)\n", rx_verify.b5, rx_verify.b5);
+			printf("rx_verify.extra: \t%o\n\n", rx_verify.extra[0]);
+			printf("rx_verify.extra: \t%o\n\n", rx_verify.extra[1]);
+
 
 			// 5. sendto
-			if (sendto(sockfd, (char *)&packet_out_vLength, ntohs(packet_out_vLength.TML), 
+			if (sendto(sockfd, (char *)&rx_verify, 5 + 8, 
 				0, (struct sockaddr *)&their_addr, addr_len) == -1)
 			{
 				perror("sendto error");
 				exit(1);
 			}		
-		}
-
-		else if (packet_in.operation == DISEMVOWEL)
-		{
-			if (DEBUG) {
-				printf("Operation: Disemvowelment requested.\n");
-				printf("String to process: %s\n", packet_in.message);
-				printf("The string '%s' disemvowled is: %s\n", 
-					packet_in.message, disemvowel(packet_in.message));
-			}
-
-			// Create packet that will be returned to the client
-			tx_disVowel packet_out_disVowel;
-			
-			// Fill in the struct with TML, RID and disVowel string
-			strcpy(packet_out_disVowel.message, disemvowel(packet_in.message));
-
-			// Need to do the strcpy first or the message size won't be correct.
-			packet_out_disVowel.TML = htons((sizeof packet_out_disVowel.TML) 
-				+ (sizeof packet_out_disVowel.RID) 
-				+ (strlen(packet_out_disVowel.message)));
-
-			packet_out_disVowel.RID = htons(ntohs(packet_in.RID));
-			
-			if (DEBUG) {
-				printf("packet_out_disVowel.TML: %d\n", ntohs(packet_out_disVowel.TML));
-				printf("packet_out_disVowel.RID: %d\n", ntohs(packet_out_disVowel.RID));
-				printf("packet_out_disVowel.message: %s\n", packet_out_disVowel.message);
-				printf("strlen(packet_out_disVowel.message): %d\n", (int)strlen(packet_out_disVowel.message));
-			}
-			
-			if (DEBUG) {
-				printf("Sending disVowel packet to Client.\n"); 			
-			}
-
-			// 5. sendto
-			if (sendto(sockfd, (char *)&packet_out_disVowel, ntohs(packet_out_disVowel.TML), 
-				0, (struct sockaddr *)&their_addr, addr_len) == -1)
-			{
-				perror("sendto error");
-				exit(1);
-			}		
-		}
-
-		// Error!
-		else
-		{
-			fprintf(stderr, "Operation not reconized!.\n");
-			break; 
-		}
-	
-		printf("Responce Sent!\n");
-		
-		if (DEBUG) {
-			printf("Sending Echo...\n");
-		}
-		
 		close(sockfd);
 	}
 	return 0;
@@ -288,79 +241,36 @@ int main(int argc, char *argv[])
 // Support Functions
 
 /*
-* This function counts the number of vowels in a string.
-* Assumes 'Y' is NOT a vowel.
+* This function calculates the 1-complement checksum
 *
-* @param:	string_in: The string you want the number of vowels in.
-* @return:	int: The number of voewls in the string.
-*/  
-int count_vowels(char* string_in)
-{
-	int vowel_count = 0;
-
-	int i;
-	for (i = 0; i < strlen(string_in); i++)
-	{
-		if (string_in[i] == 'a' || string_in[i] == 'A' ||
-			string_in[i] == 'e' || string_in[i] == 'E' ||
-			string_in[i] == 'i' || string_in[i] == 'I' ||
-			string_in[i] == 'o' || string_in[i] == 'O' ||
-			string_in[i] == 'u' || string_in[i] == 'U') 
-		{
-			vowel_count++;
-		}
-	}
-
-	return vowel_count;
-}
-
-/*
-* This function takes all the voewls out of a string.
-* Assumes 'Y' is NOT a vowel.
-*
-* @param: string_in: The string you want to remove the vowels from.
-* @return: char*: The string without vowels in it. 
 */
-char* disemvowel(char* string_in) 
+unsigned char calculate_checksum(unsigned char *data_in, int data_in_length) 
 {
-	if (DEBUG) {
-		printf("Starting Disemvowelment\n");
-	}
-	
-	int str_len = strlen(string_in);
-	static char new_string[MAX_MESSAGE_LEN];	// Make static so interrupts won't clear the stack
 
-	int i = 0;
-	int j = 0;
+	int checksum = 0;
+	int carry = 0;
+	int i;
 
-	for (i = 0; i < strlen(string_in); i++)
+	for (i = 0; i < data_in_length; i++) 
 	{
-
-		if(0) {
-			printf("Starting loop %d\n", i);
-		}
-	
-		if (string_in[i] != 'a' && string_in[i] != 'A' &&
-			string_in[i] != 'e' && string_in[i] != 'E' &&
-			string_in[i] != 'i' && string_in[i] != 'I' &&
-			string_in[i] != 'o' && string_in[i] != 'O' &&
-			string_in[i] != 'u' && string_in[i] != 'U') 
-			{
-				new_string[j] = string_in[i];
-				j++;
-			} 
+//		printf("Data_in[%i]: \t%X\n", i, (int)data_in[i]);
+		checksum += (int) data_in[i];
+		carry = checksum >> 8;
+		checksum = checksum & 0xFF;
+//		printf("Before - i:%i \tcarry: %X\t checksum: %X\n", i, carry, checksum);
+		checksum = checksum + carry;
+//		printf("After - i:%i \tcarry: %X\t checksum: %X\n", i, carry, checksum);
 	}
 
-	// End the string with '\0'
-	new_string[j] = '\0';
+//	if (DEBUG) {
+//		printf("Real Sum: %X\n", checksum);
+//	}
 
-	int new_len = strlen(new_string);
-	
-	if (DEBUG) {
-		printf("disemvowel: size of old string (%s): %d\n", string_in, str_len);
-		printf("disemvowel: size of new string (%s): %d\n", new_string, new_len);
-	}
+	checksum = ~checksum;
 
-	return &new_string[0];
+//	if (DEBUG) {
+//		printf("Checksum: %X\n", checksum);
+//	}
+
+	return (unsigned char) checksum;
 }
-
